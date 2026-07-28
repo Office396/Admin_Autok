@@ -1,0 +1,66 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# next.js
+.next/
+out/
+
+# production
+build/
+
+# misc
+.DS_Store
+*.pem
+
+# debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (NEVER commit these)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# SQL files with hardcoded credentials (run these manually, don't commit)
+ADD_HANDLER_PASSWORD_TABLE.sql
+ADD_TERMINAL_CREDENTIALS_TABLE.sql
+NEW_SUPABASE_SETUP.sql
+FIX_CREDENTIALS_UPDATE_POLICY.sql
+FIX_NULL_SESSION_ID.sql
+FIX_RLS_POLICIES.sql
+DEBUG_SESSION_ISSUE.sql
+COMPLETE_DATABASE_SETUP.sql
+migration_add_current_session.sql
+
+# Debug/fix markdown docs (dev notes only)
+DEBUG_*.md
+FIX_*.md
+TIMING_FIX.md
+TIMEZONE_FIX.md
+TIMESTAMP_DEBUG.md
+STILL_SHOWING_33_DAYS.md
+STUCK_COMMANDS_FIX.md
+PENDING_UNLOCK_FIX.md
+LOG_UPDATES_FIX.md
+SESSION_TRACKING_FIX.md
+SESSION_FLOW_DIAGRAM.md
+SESSION_FIX_COMPLETE.md
+UNLOCK_FIX.md
+FINAL_FIXES.md
+TROUBLESHOOTING.md
+SYSTEM_ARCHITECTURE.md
