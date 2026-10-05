@@ -26,7 +26,9 @@ export interface Machine {
 export interface Command {
     id: string;
     mac_address: string;
-    command: 'LOCK' | 'UNLOCK' | 'DESTRUCT' | 'RECOVER' | 'STOP' | 'UNSTOP';
+    command: 'LOCK' | 'UNLOCK' | 'DESTRUCT' | 'RECOVER' | 'STOP' | 'UNSTOP'
+        | 'START_GATEWAY' | 'STOP_GATEWAY' | 'RESTART_GATEWAY'
+        | 'INSTALL_HERMES' | 'MIGRATE_CONFIG' | `SET_CREDENTIALS:${string}`;
     executed: boolean;
     created_at: string;
 }

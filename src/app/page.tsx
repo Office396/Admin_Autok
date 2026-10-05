@@ -471,20 +471,13 @@ export default function AdminDashboard() {
     }
   }
 
-  // Fetch global credentials when switching to credentials tab
+  // Fetch global credentials when switching to credentials tab.
+  // NOTE: no auto-refresh interval here on purpose - polling would wipe
+  // whatever the admin is currently typing into the new-username/password
+  // fields. Refresh happens on tab open and via the Reset button.
   useEffect(() => {
     if (activeTab === 'credentials') {
       fetchGlobalCredentials();
-    }
-  }, [activeTab]);
-
-  // Auto-refresh credentials every 5 seconds when on credentials tab
-  useEffect(() => {
-    if (activeTab === 'credentials') {
-      const interval = setInterval(() => {
-        fetchGlobalCredentials();
-      }, 5000);
-      return () => clearInterval(interval);
     }
   }, [activeTab]);
 
