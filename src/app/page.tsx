@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { createClient, Machine, Command, ErrorLog, Session, SoftwareEnabled } from '@/lib/supabase';
+import { createClient, Machine, Command, ErrorLog, Session, SoftwareEnabled, GatewayDetail, GatewayOp } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
 
 export default function AdminDashboard() {
@@ -9,9 +9,12 @@ export default function AdminDashboard() {
   const [commands, setCommands] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<ErrorLog[]>([]);
   const [showErrors, setShowErrors] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'live' | 'locked' | 'history' | 'credentials'>('live');
+  const [activeTab, setActiveTab] = useState<'live' | 'gateway' | 'locked' | 'history' | 'credentials'>('live');
   const [sessions, setSessions] = useState<Session[]>([]);
   const [currentSessions, setCurrentSessions] = useState<Record<string, Session>>({});
+  const [gatewayDetails, setGatewayDetails] = useState<Record<string, GatewayDetail>>({});
+  const [gatewayOps, setGatewayOps] = useState<Record<string, GatewayOp[]>>({});
+  const [opsOpen, setOpsOpen] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [softwareEnabled, setSoftwareEnabled] = useState<Record<string, boolean>>({});
   const logContainerRef = useRef<HTMLDivElement>(null);
@@ -73,8 +76,23 @@ export default function AdminDashboard() {
       })
       .subscribe();
 
+    // 5. Subscribe to gateway_status updates (detail rows for the Gateway tab)
+    const gatewayChannel = supabase
+      .channel('gateway-status-realtime')
+      .on('postgres_changes', { event: '*', table: 'gateway_status', schema: 'public' }, () => {
+        if (activeTab === 'gateway') {
+          fetchGatewayDetails();
+        }
+      })
+      .subscribe();
+
     // Fetch global software enabled status
     fetchGlobalSoftwareEnabled();
+
+    // Load gateway details when the Gateway tab is opened
+    if (activeTab === 'gateway') {
+      fetchGatewayDetails();
+    }
 
     // Removed auto-disappear watchdog - machines stay visible until manually removed
 
@@ -83,6 +101,7 @@ export default function AdminDashboard() {
       supabase.removeChannel(commandChannel);
       supabase.removeChannel(sessionChannel);
       supabase.removeChannel(softwareEnabledChannel);
+      supabase.removeChannel(gatewayChannel);
     };
   }, [activeTab]);
 
@@ -270,6 +289,66 @@ export default function AdminDashboard() {
     } catch (error) {
       console.error('Error fetching sessions:', error);
     }
+  }
+
+  // Gateway: detailed rows from gateway_status (version, platforms, errors)
+  async function fetchGatewayDetails() {
+    try {
+      const { data } = await supabase
+        .from('gateway_status')
+        .select('*');
+      const detailMap: Record<string, GatewayDetail> = {};
+      data?.forEach(row => {
+        detailMap[row.mac_address] = row as GatewayDetail;
+      });
+      setGatewayDetails(detailMap);
+    } catch (error) {
+      console.error('Error fetching gateway details:', error);
+    }
+  }
+
+  // Gateway: recent operations for one machine (audit trail)
+  async function fetchGatewayOps(macAddress: string) {
+    if (opsOpen === macAddress) {
+      setOpsOpen(null);
+      return;
+    }
+    setOpsOpen(macAddress);
+    try {
+      const { data } = await supabase
+        .from('hermes_operations_log')
+        .select('*')
+        .eq('mac_address', macAddress)
+        .order('created_at', { ascending: false })
+        .limit(8);
+      setGatewayOps(prev => ({ ...prev, [macAddress]: (data || []) as GatewayOp[] }));
+    } catch (error) {
+      console.error('Error fetching gateway ops:', error);
+    }
+  }
+
+  function getGatewayState(machine: Machine): 'running' | 'error' | 'starting' | 'stopped' | 'not-installed' | 'unknown' {
+    if (machine.hermes_installed === false) return 'not-installed';
+    const s = (machine.gateway_status || 'unknown').toLowerCase();
+    if (s === 'running') return 'running';
+    if (s === 'error') return 'error';
+    if (s === 'starting' || s === 'installing' || s === 'migrating') return 'starting';
+    if (s === 'stopping') return 'stopped';
+    if (s === 'stopped') return 'stopped';
+    return 'unknown';
+  }
+
+  function gatewaySort(a: Machine, b: Machine) {
+    const rank = (m: Machine) => {
+      const st = getGatewayState(m);
+      if (st === 'running') return 0;
+      if (st === 'error') return 1;
+      if (st === 'starting') return 2;
+      if (st === 'stopped') return 3;
+      if (st === 'not-installed') return 4;
+      return 5;
+    };
+    return rank(a) - rank(b);
   }
 
   // NEW: Global software enabled status (for all machines)
@@ -712,6 +791,12 @@ export default function AdminDashboard() {
                 📡 Live
               </button>
               <button
+                onClick={() => setActiveTab('gateway')}
+                className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-all ${activeTab === 'gateway' ? 'bg-emerald-600 text-white shadow-lg' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
+              >
+                🔌 Gateway
+              </button>
+              <button
                 onClick={() => setActiveTab('locked')}
                 className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-all ${activeTab === 'locked' ? 'bg-orange-600 text-white shadow-lg' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
               >
@@ -890,6 +975,13 @@ export default function AdminDashboard() {
                             🔑 Credentials
                           </button>
                           <button
+                            onClick={() => sendCommand(machine.mac_address, 'START_GATEWAY')}
+                            className="bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-500 border border-emerald-900/50 hover:border-emerald-500 rounded-xl px-4 py-2.5 text-sm font-semibold transition-all"
+                            title="Start gateway on this machine (skipped if already running)"
+                          >
+                            ▶ Start Gateway
+                          </button>
+                          <button
                             onClick={() => {
                               if (confirm('⚠️ WARNING: This will PERMANENTLY destroy the software on this machine. Are you sure?')) {
                                 sendCommand(machine.mac_address, 'DESTRUCT');
@@ -1031,7 +1123,7 @@ export default function AdminDashboard() {
               ))}
             </div>
           )
-        ) : (
+        ) : activeTab === 'history' ? (
           <div className="bg-gray-900/40 backdrop-blur-xl border border-gray-800 rounded-2xl overflow-hidden shadow-2xl">
             {/* History Controls */}
             <div className="p-4 border-b border-gray-800 bg-gray-900/60 flex items-center justify-between">
@@ -1123,6 +1215,196 @@ export default function AdminDashboard() {
                 </tbody>
               </table>
             </div>
+          </div>
+        ) : null}
+
+        {activeTab === 'gateway' && (
+          <div className="grid gap-6">
+            <div className="flex items-center justify-between">
+              <p className="text-gray-400 text-sm">
+                Gateway runs on the machines below. Start it where Autok is online, stop it where it should not run. Commands deliver in seconds.
+              </p>
+              <button
+                onClick={fetchGatewayDetails}
+                className="p-2.5 text-gray-400 hover:text-white hover:bg-white/5 rounded-xl transition-all active:scale-95"
+                title="Refresh gateway details"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+                </svg>
+              </button>
+            </div>
+            {[...machines].sort(gatewaySort).length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-32 text-center">
+                <h3 className="text-xl font-semibold text-white mb-2">No machines reporting yet</h3>
+                <p className="text-gray-400 max-w-sm mx-auto">
+                  Machines appear here automatically once Autok reports gateway status.
+                </p>
+              </div>
+            ) : (
+              [...machines].sort(gatewaySort).map((machine) => {
+                const gw = getGatewayState(machine);
+                const detail = gatewayDetails[machine.mac_address];
+                const pending = commands[machine.mac_address];
+                const ops = gatewayOps[machine.mac_address] || [];
+                const badge = gw === 'running'
+                  ? 'bg-green-500/20 text-green-400 border-green-500/30'
+                  : gw === 'error'
+                    ? 'bg-red-500/20 text-red-400 border-red-500/30'
+                    : gw === 'starting'
+                      ? 'bg-blue-500/20 text-blue-400 border-blue-500/30'
+                      : gw === 'not-installed'
+                        ? 'bg-amber-500/20 text-amber-400 border-amber-500/30'
+                        : 'bg-gray-500/20 text-gray-400 border-gray-500/30';
+                const badgeText = gw === 'running'
+                  ? `● RUNNING${machine.gateway_pid ? ` (PID ${machine.gateway_pid})` : ''}`
+                  : gw === 'error' ? '● ERROR'
+                    : gw === 'starting' ? '● STARTING'
+                      : gw === 'stopped' ? '○ STOPPED'
+                        : gw === 'not-installed' ? '○ NOT INSTALLED'
+                          : '○ UNKNOWN';
+                return (
+                  <div
+                    key={machine.mac_address}
+                    className="group relative bg-gray-900/40 backdrop-blur-xl border border-gray-800 hover:border-emerald-500/30 rounded-2xl p-6 transition-all duration-300 overflow-hidden"
+                  >
+                    <div className="relative z-10 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+                      <div className="flex items-start gap-4">
+                        <div>
+                          <div className="flex items-center gap-3 mb-1 flex-wrap">
+                            <h2 className="text-lg font-bold text-white tracking-tight">
+                              {machine.pc_name}
+                            </h2>
+                            <span className={`px-2.5 py-0.5 rounded-full text-[10px] uppercase font-bold tracking-wider border ${badge}`}>
+                              {pending ? `⏳ PENDING: ${pending}` : badgeText}
+                            </span>
+                            <span className={`px-2.5 py-0.5 rounded-full text-[10px] uppercase font-bold tracking-wider border ${isOnline(machine) ? 'bg-green-500/10 text-green-500 border-green-900/50' : 'bg-gray-500/10 text-gray-500 border-gray-800'}`}>
+                              {isOnline(machine) ? 'Agent online' : 'Agent offline'}
+                            </span>
+                          </div>
+                          <div className="flex flex-col sm:flex-row gap-2 sm:gap-4 text-sm text-gray-400">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-gray-600">👤</span> {machine.username}
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-gray-600">🌐</span> {machine.public_ip}
+                            </div>
+                            {machine.hermes_version && (
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-gray-600">🧩</span> v{machine.hermes_version}
+                              </div>
+                            )}
+                            {machine.config_migrated && (
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-gray-600">✅</span> Config migrated
+                              </div>
+                            )}
+                            {detail?.connected_platforms && detail.connected_platforms.length > 0 && (
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-gray-600">🔗</span> {detail.connected_platforms.join(', ')}
+                              </div>
+                            )}
+                            {detail?.error_message && (
+                              <div className="flex items-center gap-1.5 text-red-400">
+                                <span>⚠️</span> {detail.error_message.slice(0, 120)}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {machine.hermes_installed === false && (
+                          <button
+                            onClick={() => sendCommand(machine.mac_address, 'INSTALL_HERMES')}
+                            className="bg-blue-500/10 hover:bg-blue-500/20 text-blue-500 border border-blue-900/50 hover:border-blue-500 rounded-xl px-4 py-2.5 text-sm font-semibold transition-all"
+                            title="Install the core engine on this machine"
+                          >
+                            ⬇️ Install
+                          </button>
+                        )}
+                        {machine.hermes_installed !== false && !machine.config_migrated && (
+                          <button
+                            onClick={() => sendCommand(machine.mac_address, 'MIGRATE_CONFIG')}
+                            className="bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 border border-purple-900/50 hover:border-purple-500 rounded-xl px-4 py-2.5 text-sm font-semibold transition-all"
+                            title="Migrate configuration on this machine"
+                          >
+                            🧬 Migrate
+                          </button>
+                        )}
+                        {gw !== 'running' ? (
+                          <button
+                            onClick={() => sendCommand(machine.mac_address, 'START_GATEWAY')}
+                            disabled={!isOnline(machine)}
+                            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all text-white ${isOnline(machine) ? 'bg-gradient-to-r from-emerald-600 to-green-600 hover:shadow-lg hover:shadow-emerald-900/40' : 'bg-gray-800 opacity-50 cursor-not-allowed'}`}
+                            title={isOnline(machine) ? 'Start gateway on this machine' : 'Agent must be online'}
+                          >
+                            ▶ Start Gateway
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              onClick={() => sendCommand(machine.mac_address, 'RESTART_GATEWAY')}
+                              className="bg-blue-500/10 hover:bg-blue-500/20 text-blue-500 border border-blue-900/50 hover:border-blue-500 rounded-xl px-4 py-2.5 text-sm font-semibold transition-all"
+                              title="Restart gateway on this machine"
+                            >
+                              🔄 Restart
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (confirm(`Stop the gateway on ${machine.pc_name}? Autok keeps running, only the service stops.`)) {
+                                  sendCommand(machine.mac_address, 'STOP_GATEWAY');
+                                }
+                              }}
+                              className="bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-900/50 hover:border-red-500 rounded-xl px-4 py-2.5 text-sm font-semibold transition-all"
+                              title="Stop gateway on this machine"
+                            >
+                              ⏹️ Stop Gateway
+                            </button>
+                          </>
+                        )}
+                        {pending && (
+                          <button
+                            onClick={() => clearStuckCommands(machine.mac_address)}
+                            className="bg-yellow-500/10 hover:bg-yellow-500/20 text-yellow-500 border border-yellow-900/50 hover:border-yellow-500 rounded-xl px-4 py-2.5 text-sm font-semibold transition-all"
+                            title="Clear stuck pending command"
+                          >
+                            🔄 Clear Pending
+                          </button>
+                        )}
+                        <button
+                          onClick={() => fetchGatewayOps(machine.mac_address)}
+                          className="bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white border border-gray-700 hover:border-gray-500 rounded-xl px-4 py-2.5 text-sm font-semibold transition-all"
+                          title="Recent service operations"
+                        >
+                          📜 Ops
+                        </button>
+                      </div>
+                    </div>
+                    {opsOpen === machine.mac_address && (
+                      <div className="relative z-10 mt-4 bg-black/30 border border-gray-800 rounded-xl p-4">
+                        <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Recent operations</p>
+                        {ops.length === 0 ? (
+                          <p className="text-gray-500 text-sm">No operations recorded yet.</p>
+                        ) : (
+                          ops.map((op) => (
+                            <div key={op.id} className="flex items-center justify-between gap-3 py-1.5 border-b border-gray-800/50 last:border-0 text-sm">
+                              <span className="text-gray-300 font-mono">{op.operation}</span>
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${op.status === 'success' ? 'bg-green-500/10 text-green-400 border-green-900/50' : op.status === 'failed' ? 'bg-red-500/10 text-red-400 border-red-900/50' : 'bg-gray-500/10 text-gray-400 border-gray-800'}`}>
+                                {op.status.toUpperCase()}
+                              </span>
+                              <span className="text-gray-500 font-mono text-xs">{op.created_at ? new Date(op.created_at).toLocaleString() : ''}</span>
+                            </div>
+                          ))
+                        )}
+                        {ops.length > 0 && ops[0].error_message && (
+                          <p className="text-red-400/80 text-xs font-mono mt-2 break-all">Last error: {ops[0].error_message.slice(0, 200)}</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
           </div>
         )}
 

@@ -21,6 +21,37 @@ export interface Machine {
     blocked: boolean;
     created_at: string;
     current_session_id?: string;
+    // Gateway tracking columns (reported by the agent, may be absent on old rows)
+    gateway_status?: string | null;
+    gateway_pid?: number | null;
+    background_running?: boolean | null;
+    hermes_installed?: boolean | null;
+    hermes_version?: string | null;
+    config_migrated?: boolean | null;
+    last_gateway_check?: string | null;
+}
+
+export interface GatewayDetail {
+    mac_address: string;
+    status: string;
+    pid?: number | null;
+    last_check?: string | null;
+    error_message?: string | null;
+    gateway_version?: string | null;
+    uptime_seconds?: number | null;
+    connected_platforms?: string[] | null;
+    updated_at?: string | null;
+}
+
+export interface GatewayOp {
+    id: string;
+    mac_address: string;
+    operation: string;
+    status: string;
+    details?: Record<string, unknown> | null;
+    error_message?: string | null;
+    duration_ms?: number | null;
+    created_at: string;
 }
 
 export interface Command {

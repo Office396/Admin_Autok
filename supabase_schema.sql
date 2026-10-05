@@ -73,6 +73,75 @@ CREATE INDEX IF NOT EXISTS idx_error_logs_mac ON error_logs(mac_address);
 CREATE INDEX IF NOT EXISTS idx_sessions_mac ON sessions(mac_address);
 CREATE INDEX IF NOT EXISTS idx_sessions_start ON sessions(start_time);
 
+-- ============================================================================
+-- Gateway control (Gateway tab + Live-tab Start button)
+-- Agents report gateway fields on machines; details go to gateway_status;
+-- audit trail goes to hermes_operations_log. Remote control commands
+-- (START_GATEWAY, STOP_GATEWAY, RESTART_GATEWAY, INSTALL_HERMES,
+-- MIGRATE_CONFIG) travel through the commands table (see CHECK above).
+-- ============================================================================
+
+-- Gateway tracking columns on machines
+ALTER TABLE machines
+ADD COLUMN IF NOT EXISTS gateway_status TEXT DEFAULT 'unknown',
+ADD COLUMN IF NOT EXISTS gateway_pid INTEGER,
+ADD COLUMN IF NOT EXISTS background_running BOOLEAN DEFAULT FALSE,
+ADD COLUMN IF NOT EXISTS hermes_installed BOOLEAN DEFAULT FALSE,
+ADD COLUMN IF NOT EXISTS hermes_version TEXT,
+ADD COLUMN IF NOT EXISTS config_migrated BOOLEAN DEFAULT FALSE,
+ADD COLUMN IF NOT EXISTS last_gateway_check TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_machines_gateway_status ON machines(gateway_status);
+
+-- Detailed gateway health (one row per machine, upserted by the agent).
+-- IMPORTANT: status MUST accept every value the agent reports:
+-- running/stopped/starting/stopping/error/unknown/installing/migrating.
+CREATE TABLE IF NOT EXISTS gateway_status (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    mac_address TEXT NOT NULL REFERENCES machines(mac_address) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK (status IN ('running', 'stopped', 'starting', 'stopping', 'error', 'unknown', 'installing', 'migrating')),
+    pid INTEGER,
+    last_check TIMESTAMPTZ DEFAULT NOW(),
+    error_message TEXT,
+    gateway_version TEXT,
+    uptime_seconds INTEGER,
+    connected_platforms JSONB DEFAULT '[]'::jsonb,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(mac_address)
+);
+
+ALTER TABLE gateway_status ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow all access to gateway_status" ON gateway_status;
+CREATE POLICY "Allow all access to gateway_status"
+ON gateway_status FOR ALL USING (true) WITH CHECK (true);
+
+CREATE INDEX IF NOT EXISTS idx_gateway_status_mac ON gateway_status(mac_address);
+
+-- Audit trail of gateway operations
+CREATE TABLE IF NOT EXISTS hermes_operations_log (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    mac_address TEXT NOT NULL REFERENCES machines(mac_address) ON DELETE CASCADE,
+    operation TEXT NOT NULL,
+    status TEXT NOT NULL,
+    details JSONB DEFAULT '{}'::jsonb,
+    error_message TEXT,
+    duration_ms INTEGER,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE hermes_operations_log ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow all access to hermes_operations_log" ON hermes_operations_log;
+CREATE POLICY "Allow all access to hermes_operations_log"
+ON hermes_operations_log FOR ALL USING (true) WITH CHECK (true);
+
+CREATE INDEX IF NOT EXISTS idx_hermes_ops_mac ON hermes_operations_log(mac_address);
+CREATE INDEX IF NOT EXISTS idx_hermes_ops_created ON hermes_operations_log(created_at DESC);
+
+-- Realtime for the Gateway tab (Database -> Replication must include these)
+-- ALTER PUBLICATION supabase_realtime ADD TABLE gateway_status;
+-- ALTER PUBLICATION supabase_realtime ADD TABLE hermes_operations_log;
+
 -- Software kill-switch table (per-machine + GLOBAL_ALL rows)
 CREATE TABLE IF NOT EXISTS software_enabled (
   mac_address TEXT PRIMARY KEY,
