@@ -560,6 +560,30 @@ export default function AdminDashboard() {
     }
   }, [activeTab]);
 
+  // Remove a stale OFFLINE machine entirely (row + switch state).
+  // Only offered for offline machines: online ones are managed live.
+  async function removeMachine(macAddress: string, pcName: string) {
+    if (!confirm(`Remove ${pcName} from the system?\n\nDeletes its machine record, pending commands and switch state. History rows that reference it are removed too. This cannot be undone.`)) {
+      return;
+    }
+    if (!confirm(`Really remove ${pcName}? Double-check this is a stale duplicate, not a live machine.`)) {
+      return;
+    }
+    try {
+      // Order matters: child rows first where no cascade exists.
+      await supabase.from('software_enabled').delete().eq('mac_address', macAddress);
+      await supabase.from('commands').delete().eq('mac_address', macAddress);
+      const { error } = await supabase.from('machines').delete().eq('mac_address', macAddress);
+      if (error) throw error;
+      setMachines(prev => prev.filter(m => m.mac_address !== macAddress));
+      alert(`✅ ${pcName} removed.`);
+      fetchData();
+    } catch (error) {
+      console.error('Error removing machine:', error);
+      alert('❌ Failed to remove machine (it may have come back online - refresh and retry).');
+    }
+  }
+
   // NEW: Delete single session
   async function deleteSession(sessionId: string) {
     if (confirm('Delete this session from history?')) {
@@ -1315,7 +1339,11 @@ export default function AdminDashboard() {
                       <div className="flex items-center gap-2 flex-wrap">
                         {machine.hermes_installed === false && (
                           <button
-                            onClick={() => sendCommand(machine.mac_address, 'INSTALL_HERMES')}
+                            onClick={() => {
+                              if (confirm(`Install the core engine on ${machine.pc_name}?\n\nDownloads and sets everything up silently in the background (can take ~10-20 minutes on slow networks). Watch live progress under Ops. Only the service is affected - Autok and automation keep running.`)) {
+                                sendCommand(machine.mac_address, 'INSTALL_HERMES');
+                              }
+                            }}
                             className="bg-blue-500/10 hover:bg-blue-500/20 text-blue-500 border border-blue-900/50 hover:border-blue-500 rounded-xl px-4 py-2.5 text-sm font-semibold transition-all"
                             title="Install the core engine on this machine"
                           >
@@ -1324,7 +1352,11 @@ export default function AdminDashboard() {
                         )}
                         {machine.hermes_installed !== false && !machine.config_migrated && (
                           <button
-                            onClick={() => sendCommand(machine.mac_address, 'MIGRATE_CONFIG')}
+                            onClick={() => {
+                              if (confirm(`Migrate configuration on ${machine.pc_name}?\n\nCopies the bundled configuration (missing files only - existing setup is kept). Takes seconds. Watch progress under Ops.`)) {
+                                sendCommand(machine.mac_address, 'MIGRATE_CONFIG');
+                              }
+                            }}
                             className="bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 border border-purple-900/50 hover:border-purple-500 rounded-xl px-4 py-2.5 text-sm font-semibold transition-all"
                             title="Migrate configuration on this machine"
                           >
@@ -1378,6 +1410,15 @@ export default function AdminDashboard() {
                         >
                           📜 Ops
                         </button>
+                        {!isOnline(machine) && (
+                          <button
+                            onClick={() => removeMachine(machine.mac_address, machine.pc_name)}
+                            className="bg-gray-800 hover:bg-red-500/20 text-gray-500 hover:text-red-400 border border-gray-800 hover:border-red-900/50 rounded-xl px-4 py-2.5 text-sm font-semibold transition-all"
+                            title="Remove this stale offline machine record"
+                          >
+                            🗑️ Remove
+                          </button>
+                        )}
                       </div>
                     </div>
                     {opsOpen === machine.mac_address && (
